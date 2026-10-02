@@ -111,10 +111,22 @@ deps = {
       },
     ],
   },
-  'third_party/golang/linux/{host_cpu}': {
+  # Linux checks out both architectures because some bots are composed of a x64
+  # orchestrator/builder and an Arm test runner.
+  'third_party/golang/linux/x64': {
     'packages': [
       {
-        'package': 'infra/3pp/tools/go/${{platform}}',
+        'package': 'infra/3pp/tools/go/linux-amd64',
+        'version': 'version:3@{golang_version}',
+      },
+    ],
+    'dep_type': 'cipd',
+    'condition': 'host_os == "linux"',
+  },
+  'third_party/golang/linux/arm64': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/go/linux-arm64',
         'version': 'version:3@{golang_version}',
       },
     ],
