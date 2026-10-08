@@ -133,7 +133,7 @@ deps = {
     'dep_type': 'cipd',
     'condition': 'host_os == "linux"',
   },
-  'third_party/golang/win/{host_cpu}': {
+  'third_party/golang/win/x64': {
     'packages': [
       {
         'package': 'infra/3pp/tools/go/${{platform}}',
@@ -141,7 +141,17 @@ deps = {
       },
     ],
     'dep_type': 'cipd',
-    'condition': 'host_os == "win"',
+    'condition': 'host_os == "win" and host_cpu == "x64"',
+  },
+  'third_party/golang/win/arm64': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/go/${{platform}}',
+        'version': 'version:3@{golang_version}',
+      },
+    ],
+    'dep_type': 'cipd',
+    'condition': 'host_os == "win" and host_cpu == "arm64"',
   },
   # Mac checks out both architectures because some bots are composed of a modern
   # Arm orchestrator and a x64 test runner.
@@ -165,5 +175,5 @@ deps = {
     'dep_type': 'cipd',
     'condition': 'host_os == "mac"',
   },
-  'third_party/clang-format/script': '{clang_format_git}@{clang_format_revision}',
+  'third_party/clang-format/script': Var('clang_format_git') + '@' + Var('clang_format_revision'),
 }
