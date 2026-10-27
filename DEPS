@@ -39,6 +39,9 @@ git_dependencies = 'SYNC'
 use_relative_paths = True
 
 vars = {
+  # This variable is overridden in Chromium's DEPS file.
+  'build_with_chromium': False,
+
   'golang_version': '1.26.2',
   'clang_format_git': 'https://chromium.googlesource.com/external/github.com/llvm/llvm-project/clang/tools/clang-format.git',
 
@@ -57,7 +60,7 @@ allowed_hosts = [
 deps = {
   'buildtools/win-format': {
     'bucket': 'chromium-clang-format',
-    'condition': 'host_os == "win"',
+    'condition': 'host_os == "win" and not build_with_chromium',
     'dep_type': 'gcs',
     'objects': [
       {
@@ -71,7 +74,8 @@ deps = {
   },
   'buildtools/mac-format': {
     'bucket': 'chromium-clang-format',
-    'condition': 'host_os == "mac" and host_cpu == "x64"',
+    'condition': ('host_os == "mac" and host_cpu == "x64" '
+                  'and not build_with_chromium'),
     'dep_type': 'gcs',
     'objects': [
       {
@@ -85,7 +89,8 @@ deps = {
   },
   'buildtools/mac_arm64-format': {
     'bucket': 'chromium-clang-format',
-    'condition': 'host_os == "mac" and host_cpu == "arm64"',
+    'condition': ('host_os == "mac" and host_cpu == "arm64" '
+                  'and not build_with_chromium'),
     'dep_type': 'gcs',
     'objects': [
       {
@@ -99,7 +104,7 @@ deps = {
   },
   'buildtools/linux64-format': {
     'bucket': 'chromium-clang-format',
-    'condition': 'host_os == "linux"',
+    'condition': 'host_os == "linux" and not build_with_chromium',
     'dep_type': 'gcs',
     'objects': [
       {
@@ -175,5 +180,8 @@ deps = {
     'dep_type': 'cipd',
     'condition': 'host_os == "mac"',
   },
-  'third_party/clang-format/script': Var('clang_format_git') + '@' + Var('clang_format_revision'),
+  'third_party/clang-format/script': {
+    'url': Var('clang_format_git') + '@' + Var('clang_format_revision'),
+    'condition': 'not build_with_chromium',
+  },
 }
