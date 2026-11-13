@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -267,6 +268,10 @@ func (a *Archive) cloneFieldsExceptRequests() Archive {
 // FindRequest searches for the given request in the archive.
 // Returns ErrNotFound if the request could not be found.
 //
+// Only archived requests recorded with the request's method can match: first
+// those with the exact URL, then (unless fuzzy URL matching is disabled) those
+// with the same path and the closest query.
+//
 // Does not use the request body, but reads the request body to
 // prevent WPR from issuing a Connection Reset error when
 // handling large upload requests.
@@ -301,29 +306,48 @@ func (a *Archive) FindRequest(req *http.Request) (*http.Request, *http.Response,
 	assertCompleteURL(req.URL)
 	reqUrl := req.URL.String()
 
-	if len(hostMap[reqUrl]) > 0 {
+	if hasMethod(hostMap[reqUrl], req.Method) {
 		return a.findBestMatchInArchivedRequestSet(req, hostMap[reqUrl])
 	}
 
-	// For all URLs with a matching path, pick the URL that has the most matching query parameters.
-	// The match ratio is defined to be 2*M/T, where
-	//   M = number of matches x where a.Query[x]=b.Query[x]
-	//   T = sum(len(a.Query)) + sum(len(b.Query))
-	aq := req.URL.Query()
+	closest := closestURLs(hostMap, req.URL, req.Method)
+	if len(closest) > 0 && !a.DisableFuzzyURLMatching {
+		return a.findBestMatchInArchivedRequestSet(req, hostMap[closest[0]])
+	}
 
-	var bestURL string
-	var bestURLs []string // For debugging fuzzy matching
+	if a.DisableFuzzyURLMatching {
+		Log().Debug("No exact match found", "url", reqUrl,
+			"num_matches", len(closest), "matches", strings.Join(closest, ","))
+	}
+
+	return nil, nil, ErrNotFound
+}
+
+// closestURLs returns the URLs in hostMap that were recorded with method and
+// have the same path as u, whose query parameters best match u's, sorted.
+//
+// The match ratio is defined to be 2*M/T, where
+//
+//	M = number of matches x where a.Query[x]=b.Query[x]
+//	T = sum(len(a.Query)) + sum(len(b.Query))
+func closestURLs(hostMap map[string][]*ArchivedRequest, u *url.URL, method string) []string {
+	aq := u.Query()
+
+	var bestURLs []string
 	var bestRatio float64
 
-	for ustr := range hostMap {
-		u, err := url.Parse(ustr)
+	for ustr, reqs := range hostMap {
+		if !hasMethod(reqs, method) {
+			continue
+		}
+		bu, err := url.Parse(ustr)
 		if err != nil {
 			continue
 		}
-		if u.Path != req.URL.Path {
+		if bu.Path != u.Path {
 			continue
 		}
-		bq := u.Query()
+		bq := bu.Query()
 		m := 1
 		t := len(aq) + len(bq)
 		for k, v := range aq {
@@ -334,28 +358,36 @@ func (a *Archive) FindRequest(req *http.Request) (*http.Request, *http.Response,
 		ratio := 2 * float64(m) / float64(t)
 
 		if ratio > bestRatio {
+			bestRatio = ratio
 			bestURLs = nil
 		}
-		bestURLs = append(bestURLs, bestURL)
-
-		if ratio > bestRatio ||
-			// Map iteration order is non-deterministic, so we must break ties.
-			(ratio == bestRatio && ustr < bestURL) {
-			bestURL = ustr
-			bestRatio = ratio
+		if ratio == bestRatio {
+			bestURLs = append(bestURLs, ustr)
 		}
 	}
 
-	if bestURL != "" && !a.DisableFuzzyURLMatching {
-		return a.findBestMatchInArchivedRequestSet(req, hostMap[bestURL])
-	}
+	// Map iteration order is non-deterministic, so we must break ties.
+	sort.Strings(bestURLs)
+	return bestURLs
+}
 
-	if a.DisableFuzzyURLMatching {
-		Log().Debug("No exact match found", "url", reqUrl,
-			"num_matches", len(bestURLs), "matches", strings.Join(bestURLs, ","))
+// hasMethod reports whether any of reqs was recorded with the given method.
+func hasMethod(reqs []*ArchivedRequest, method string) bool {
+	for _, r := range reqs {
+		if r.method() == method {
+			return true
+		}
 	}
+	return false
+}
 
-	return nil, nil, ErrNotFound
+// method returns the method of the archived request, read from its request
+// line without unmarshaling the request.
+func (ar *ArchivedRequest) method() string {
+	if i := bytes.IndexByte(ar.SerializedRequest, ' '); i > 0 {
+		return string(ar.SerializedRequest[:i])
+	}
+	return ""
 }
 
 // Given an incoming request and a set of matches in the archive, identify the best match,
@@ -368,13 +400,6 @@ func (a *Archive) findBestMatchInArchivedRequestSet(
 
 	if len(archivedReqs) == 0 {
 		return nil, nil, ErrNotFound
-	} else if len(archivedReqs) == 1 {
-		archivedReq, archivedResp, err := archivedReqs[0].unmarshal(scheme)
-		if err != nil {
-			Log().Error("Error unmarshaling request", "error", err)
-			return nil, nil, err
-		}
-		return archivedReq, archivedResp, err
 	}
 
 	// There can be multiple requests with the same URL string. If that's the
@@ -422,7 +447,8 @@ func (a *Archive) findBestMatchInArchivedRequestSet(
 		bestInSequenceMatch.Match.LastServedSessionId = a.CurrentSessionId
 		return bestInSequenceMatch.Request, bestInSequenceMatch.Response, nil
 	} else if bestMatch.Match != nil {
-		bestMatch.Match.LastServedSessionId = a.CurrentSessionId
+		// No need to mark it as served: the mark is only read in the chronological
+		// sequence, where all the candidates are already marked when we get here.
 		return bestMatch.Request, bestMatch.Response, nil
 	}
 
@@ -457,8 +483,8 @@ func (a *Archive) AddArchivedRequest(req *http.Request, resp *http.Response, mod
 		Log().Warn("Overwriting existing request")
 		requests = []*ArchivedRequest{archivedRequest}
 	} else if mode == AddModeSkipExisting {
-		if requests != nil {
-			Log().Warn("Skipping existing request", "url", urlStr)
+		if hasMethod(requests, req.Method) {
+			Log().Warn("Skipping existing request", "method", req.Method, "url", urlStr)
 			return nil
 		}
 		requests = append(requests, archivedRequest)
@@ -560,7 +586,7 @@ func (a *Archive) Add(method string, urlString string, mode AddMode) error {
 	// return the first found response.
 	if mode == AddModeAppend || mode == AddModeSkipExisting {
 		if foundReq, _, notFoundErr := a.FindRequest(req); notFoundErr != ErrNotFound {
-			if foundReq.URL.String() == url.String() {
+			if foundReq.URL.String() == url.String() && foundReq.Method == req.Method {
 				if mode == AddModeSkipExisting {
 					Log().Warn("Skipping existing request", "method", req.Method,
 						"url", urlString)

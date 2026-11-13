@@ -134,7 +134,7 @@ func (proxy *replayingProxy) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	// Lookup the response in the archive.
 	_, storedResp, err := proxy.a.FindRequest(req)
 	if err != nil {
-		logger.Warn("Proxy: FAILED to find request", "error", err)
+		logger.Warn("Proxy: FAILED to find request", "method", req.Method, "error", err)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

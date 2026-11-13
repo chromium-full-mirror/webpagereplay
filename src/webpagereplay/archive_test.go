@@ -6,10 +6,12 @@ package webpagereplay
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +25,54 @@ func createArchivedRequest(t *testing.T, ustr string, header http.Header) *Archi
 		return nil
 	}
 	return archivedRequest
+}
+
+// newRequest returns a request with the given method, URL and body.
+func newRequest(method, ustr, body string) *http.Request {
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	return httptest.NewRequest(method, ustr, r)
+}
+
+// newResponse returns a 200 response with the given body.
+func newResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode:    200,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{},
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+	}
+}
+
+// createArchivedRequestFor returns an archived request for req, whose response
+// body is respBody.
+func createArchivedRequestFor(t *testing.T, req *http.Request, respBody string) *ArchivedRequest {
+	t.Helper()
+	archivedRequest, err := serializeRequest(req, newResponse(respBody))
+	if err != nil {
+		t.Fatalf("failed to serialize request %s %s: %v", req.Method, req.URL, err)
+	}
+	return archivedRequest
+}
+
+// findResponseBody returns the body of the archived response that FindRequest
+// returns for req.
+func findResponseBody(t *testing.T, a *Archive, req *http.Request) string {
+	t.Helper()
+	_, resp, err := a.FindRequest(req)
+	if err != nil {
+		t.Fatalf("failed to find %s %s: %v", req.Method, req.URL, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read the response for %s %s: %v", req.Method, req.URL, err)
+	}
+	return string(body)
 }
 
 func validateTrim(t *testing.T, f func(req *http.Request, resp *http.Response) (bool, error), a Archive, expected int) {
@@ -261,6 +311,222 @@ func TestTieBreakChronologicalOrder(t *testing.T) {
 	}
 }
 
+// A request whose exact URL was only recorded with another method matches a
+// request recorded with its own method on the same path.
+func TestFindRequestPrefersMethodOverExactURL(t *testing.T) {
+	const u1 = "https://example.com/collect?t=1"
+	const u2 = "https://example.com/collect?t=2"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		u1: {createArchivedRequestFor(t, newRequest("GET", u1, ""), "get")},
+		u2: {createArchivedRequestFor(t, newRequest("POST", u2, "data"), "post")},
+	}
+	prepareArchiveForReplay(&a)
+
+	if got, want := findResponseBody(t, &a, newRequest("POST", u1, "data")), "post"; got != want {
+		t.Errorf("POST %s: got %q, want %q", u1, got, want)
+	}
+	if got, want := findResponseBody(t, &a, newRequest("GET", u1, "")), "get"; got != want {
+		t.Errorf("GET %s: got %q, want %q", u1, got, want)
+	}
+}
+
+// A request whose exact URL has several entries, none of them recorded with its
+// method, matches a request recorded with its method on the same path instead
+// of failing.
+func TestFindRequestMethodMismatchWithSeveralEntries(t *testing.T) {
+	const u1 = "https://example.com/cart.js?_=1"
+	const u2 = "https://example.com/cart.js?_=2"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		u1: {
+			createArchivedRequestFor(t, newRequest("GET", u1, ""), "get1"),
+			createArchivedRequestFor(t, newRequest("GET", u1, ""), "get2"),
+		},
+		u2: {createArchivedRequestFor(t, newRequest("POST", u2, "data"), "post")},
+	}
+	prepareArchiveForReplay(&a)
+
+	if got, want := findResponseBody(t, &a, newRequest("POST", u1, "data")), "post"; got != want {
+		t.Errorf("POST %s: got %q, want %q", u1, got, want)
+	}
+}
+
+// Fuzzy URL matching only considers URLs recorded with the request's method,
+// even if the query of a URL recorded with another method matches better.
+func TestFindRequestFuzzyMatchingRequiresMethod(t *testing.T) {
+	const getURL = "https://example.com/api?op=read&id=1"
+	const postURL = "https://example.com/api?op=write&id=2"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		getURL:  {createArchivedRequestFor(t, newRequest("GET", getURL, ""), "get")},
+		postURL: {createArchivedRequestFor(t, newRequest("POST", postURL, "data"), "post")},
+	}
+	prepareArchiveForReplay(&a)
+
+	const u1 = "https://example.com/api?op=read&id=3"
+	if got, want := findResponseBody(t, &a, newRequest("POST", u1, "data")), "post"; got != want {
+		t.Errorf("POST %s: got %q, want %q", u1, got, want)
+	}
+	const u2 = "https://example.com/api?op=write&id=3"
+	if got, want := findResponseBody(t, &a, newRequest("GET", u2, "")), "get"; got != want {
+		t.Errorf("GET %s: got %q, want %q", u2, got, want)
+	}
+}
+
+// Only requests recorded with the request's method match. For instance, a
+// recorded CORS preflight is not served for a GET or a POST.
+func TestFindRequestRequiresMethod(t *testing.T) {
+	const u = "https://example.com/api?a=1"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		u: {createArchivedRequestFor(t, newRequest("OPTIONS", u, ""), "preflight")},
+	}
+	prepareArchiveForReplay(&a)
+
+	for _, tc := range []struct{ method, ustr string }{
+		{"GET", u},
+		{"POST", u},
+		{"POST", "https://example.com/api?a=2"},
+	} {
+		if _, _, err := a.FindRequest(newRequest(tc.method, tc.ustr, "")); err != ErrNotFound {
+			t.Errorf("%s %s: got error %v, want %v", tc.method, tc.ustr, err, ErrNotFound)
+		}
+	}
+	if got, want := findResponseBody(t, &a, newRequest("OPTIONS", u, "")), "preflight"; got != want {
+		t.Errorf("OPTIONS %s: got %q, want %q", u, got, want)
+	}
+}
+
+// A single archived request doesn't match a request with another method. The
+// method check used to be skipped when there was only one archived request.
+func TestFindBestMatchInArchivedRequestSetRequiresMethod(t *testing.T) {
+	const u = "https://example.com/api"
+	a := newArchive()
+	prepareArchiveForReplay(&a)
+
+	reqs := []*ArchivedRequest{createArchivedRequestFor(t, newRequest("OPTIONS", u, ""), "preflight")}
+	if _, _, err := a.findBestMatchInArchivedRequestSet(newRequest("POST", u, ""), reqs); err != ErrNotFound {
+		t.Errorf("POST %s: got error %v, want %v", u, err, ErrNotFound)
+	}
+}
+
+// A single archived request is served again and again in the chronological
+// sequence, until a new replay session starts.
+func TestFindRequestSingleRequestInChronologicalSequence(t *testing.T) {
+	const u = "https://example.com/data.json"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		u: {createArchivedRequestFor(t, newRequest("GET", u, ""), "only")},
+	}
+	a.ServeResponseInChronologicalSequence = true
+	prepareArchiveForReplay(&a)
+
+	for i := 1; i <= 3; i++ {
+		if got, want := findResponseBody(t, &a, newRequest("GET", u, "")), "only"; got != want {
+			t.Errorf("GET %s (#%d): got %q, want %q", u, i, got, want)
+		}
+	}
+	a.StartNewReplaySession()
+	if got, want := findResponseBody(t, &a, newRequest("GET", u, "")), "only"; got != want {
+		t.Errorf("GET %s in a new replay session: got %q, want %q", u, got, want)
+	}
+}
+
+// Only the chronological sequence keeps track of which requests were served.
+// Outside of it, finding a request doesn't write to the archive.
+func TestFindRequestMarksServedRequestsOnlyInChronologicalSequence(t *testing.T) {
+	const u = "https://example.com/data.json"
+	for _, chronological := range []bool{false, true} {
+		a := newArchive()
+		a.Requests["example.com"] = map[string][]*ArchivedRequest{
+			u: {
+				createArchivedRequestFor(t, newRequest("GET", u, ""), "first"),
+				createArchivedRequestFor(t, newRequest("GET", u, ""), "second"),
+			},
+		}
+		a.ServeResponseInChronologicalSequence = chronological
+		prepareArchiveForReplay(&a)
+
+		for i := 0; i < 3; i++ {
+			findResponseBody(t, &a, newRequest("GET", u, ""))
+		}
+		marked := 0
+		for _, r := range a.Requests["example.com"][u] {
+			if r.LastServedSessionId == a.CurrentSessionId {
+				marked++
+			}
+		}
+		// The first two lookups serve both requests in the sequence.
+		want := 0
+		if chronological {
+			want = 2
+		}
+		if marked != want {
+			t.Errorf("chronological sequence %v: %d requests marked as served, want %d", chronological, marked, want)
+		}
+	}
+}
+
+// With fuzzy URL matching disabled, only the exact URL can match, and only with
+// the request's method.
+func TestFindRequestMethodWithFuzzyURLMatchingDisabled(t *testing.T) {
+	const u1 = "https://example.com/collect?t=1"
+	const u2 = "https://example.com/collect?t=2"
+	a := newArchive()
+	a.Requests["example.com"] = map[string][]*ArchivedRequest{
+		u1: {createArchivedRequestFor(t, newRequest("GET", u1, ""), "get")},
+		u2: {createArchivedRequestFor(t, newRequest("POST", u2, "data"), "post")},
+	}
+	a.DisableFuzzyURLMatching = true
+	prepareArchiveForReplay(&a)
+
+	if got, want := findResponseBody(t, &a, newRequest("GET", u1, "")), "get"; got != want {
+		t.Errorf("GET %s: got %q, want %q", u1, got, want)
+	}
+	for _, ustr := range []string{u1, "https://example.com/collect?t=3"} {
+		if _, _, err := a.FindRequest(newRequest("POST", ustr, "data")); err != ErrNotFound {
+			t.Errorf("POST %s: got error %v, want %v", ustr, err, ErrNotFound)
+		}
+	}
+}
+
+// closestURLs only considers the URLs on the same path that were recorded with
+// the method, and returns the ones whose queries match best, sorted.
+func TestClosestURLs(t *testing.T) {
+	const (
+		read1  = "https://example.com/api?op=read&id=1"
+		read2  = "https://example.com/api?op=read&id=2"
+		write1 = "https://example.com/api?op=write&id=1"
+		other  = "https://example.com/other?op=read&id=9"
+	)
+	hostMap := map[string][]*ArchivedRequest{
+		read1:  {createArchivedRequestFor(t, newRequest("GET", read1, ""), "get")},
+		read2:  {createArchivedRequestFor(t, newRequest("GET", read2, ""), "get")},
+		write1: {createArchivedRequestFor(t, newRequest("POST", write1, "data"), "post")},
+		other:  {createArchivedRequestFor(t, newRequest("POST", other, "data"), "post")},
+	}
+	u, err := url.Parse("https://example.com/api?op=read&id=9")
+	if err != nil {
+		t.Fatalf("failed to parse the URL: %v", err)
+	}
+
+	// read1 and read2 each have one query parameter in common with u, and
+	// write1 has none.
+	for _, tc := range []struct {
+		method string
+		want   []string
+	}{
+		{"GET", []string{read1, read2}},
+		{"POST", []string{write1}},
+		{"PUT", nil},
+	} {
+		if got := closestURLs(hostMap, u, tc.method); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.method, got, tc.want)
+		}
+	}
+}
+
 func TestMerge(t *testing.T) {
 	a := newArchive()
 	b := newArchive()
@@ -465,6 +731,66 @@ func TestAdd(t *testing.T) {
 		t.Fatalf("Expected 1 requests in archive a")
 	}
 
+}
+
+// With AddModeSkipExisting, a request is only skipped if a request with its
+// method was recorded under its URL.
+func TestAddArchivedRequestSkipExistingConsidersMethod(t *testing.T) {
+	const u = "https://example.com/collect"
+	a := newArchive()
+	for _, tc := range []struct {
+		method, respBody string
+		wantRequests     int
+	}{
+		{"GET", "get1", 1},
+		// The URL was only recorded with GET.
+		{"POST", "post1", 2},
+		{"POST", "post2", 2},
+		{"GET", "get2", 2},
+	} {
+		if err := a.AddArchivedRequest(newRequest(tc.method, u, "data"), newResponse(tc.respBody), AddModeSkipExisting); err != nil {
+			t.Fatalf("failed to add %s %s: %v", tc.method, u, err)
+		}
+		if got := len(a.Requests["example.com"][u]); got != tc.wantRequests {
+			t.Fatalf("after adding %s %s: got %d requests, want %d", tc.method, u, got, tc.wantRequests)
+		}
+	}
+	prepareArchiveForReplay(&a)
+	for method, want := range map[string]string{"GET": "get1", "POST": "post1"} {
+		if got := findResponseBody(t, &a, newRequest(method, u, "data")); got != want {
+			t.Errorf("%s %s: got %q, want %q", method, u, got, want)
+		}
+	}
+}
+
+// Add does not consider a request recorded with another method a duplicate.
+func TestAddSkipExistingConsidersMethod(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		io.WriteString(res, req.Method)
+	}))
+	defer testServer.Close()
+
+	a := newArchive()
+	u := testServer.URL + "/collect"
+	requestURL, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("failed to parse %s: %v", u, err)
+	}
+	for i, method := range []string{"GET", "POST", "POST", "GET"} {
+		if err := a.Add(method, u, AddModeSkipExisting); err != nil {
+			t.Fatalf("failed to add %s %s: %v", method, u, err)
+		}
+		// Only the first GET and the first POST are added.
+		if got, want := len(a.Requests[requestURL.Host][u]), min(i+1, 2); got != want {
+			t.Fatalf("after adding %s %s: got %d requests, want %d", method, u, got, want)
+		}
+	}
+	prepareArchiveForReplay(&a)
+	for _, method := range []string{"GET", "POST"} {
+		if got := findResponseBody(t, &a, newRequest(method, u, "")); got != method {
+			t.Errorf("%s %s: got %q, want %q", method, u, got, method)
+		}
+	}
 }
 
 func TestArchiveClone(t *testing.T) {
