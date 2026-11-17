@@ -41,7 +41,8 @@ def get_go_compiler_path() -> pathlib.Path:
     path = _get_bin_path() / f"go{_get_exec_extension()}"
     if not path.exists():
         raise FileNotFoundError(
-            f"Go compiler not found at {path}. Did you run `gclient sync`?")
+            f"Go compiler not found at {path}. Did you run `gclient sync`?"
+        )
     return path
 
 
@@ -49,5 +50,6 @@ def get_gofmt_path() -> pathlib.Path:
     path = _get_bin_path() / f"gofmt{_get_exec_extension()}"
     if not path.exists():
         raise FileNotFoundError(
-            f"Go formatter not found at {path}. Did you run `gclient sync`?")
+            f"Go formatter not found at {path}. Did you run `gclient sync`?"
+        )
     return path

@@ -47,7 +47,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         build.build(out_dir=tmpdir, binary="httparchive")
         return_code = subprocess.call(
-            [str(pathlib.Path(tmpdir) / "httparchive")] + sys.argv[1:])
+            [str(pathlib.Path(tmpdir) / "httparchive")] + sys.argv[1:]
+        )
         sys.exit(return_code)
 
 

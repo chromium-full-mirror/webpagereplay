@@ -42,8 +42,9 @@ import build
 def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         build.build(out_dir=tmpdir)
-        return_code = subprocess.call([str(pathlib.Path(tmpdir) / "wpr")] +
-                                      sys.argv[1:])
+        return_code = subprocess.call(
+            [str(pathlib.Path(tmpdir) / "wpr")] + sys.argv[1:]
+        )
         sys.exit(return_code)
 
 

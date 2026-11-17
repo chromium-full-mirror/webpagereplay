@@ -1,0 +1,14 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+line-length = 80
+indent-width = 4
+exclude = []
+
+[format]
+indent-style = "space"
+quote-style = "double"
+
+[lint]
+select = ["E", "F", "W", "B", "I", "UP"]

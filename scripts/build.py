@@ -51,10 +51,9 @@ def _run(cmd, env=None, stdout=None, stderr=None):
     env_str = " ".join([f"{k}={v}" for k, v in env.items()])
     cmd_str = " ".join(cmd)
     logging.info(f"{env_str} {cmd_str}")
-    subprocess.check_call(cmd,
-                          env=os.environ.copy() | env,
-                          stdout=stdout,
-                          stderr=stderr)
+    subprocess.check_call(
+        cmd, env=os.environ.copy() | env, stdout=stdout, stderr=stderr
+    )
 
 
 def build(os_name=None, arch=None, out_dir=None, binary=None):
@@ -84,7 +83,8 @@ def build(os_name=None, arch=None, out_dir=None, binary=None):
             str(out_dir / binary),
             f"{binary}.go",
         ],
-        env)
+        env,
+    )
 
 
 def main():
@@ -92,19 +92,24 @@ def main():
     parser.add_argument(
         "--os",
         help="Target OS (win, mac, linux, chromeos or android). Defaults to "
-        "the host OS.")
+        "the host OS.",
+    )
     parser.add_argument(
         "--arch",
         help="Target arch (x64, x86, arm64 or arm32). Defaults to the host "
-        "arch.")
-    parser.add_argument("--out-dir",
-                        help="Output directory for the binary. Defaults to "
-                        "the current directory")
-    parser.add_argument("--binary",
-                        help="Binary to build: wpr (default) or httparchive.")
-    parser.add_argument("--verbose",
-                        action="store_true",
-                        help="Enable verbose logging")
+        "arch.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        help="Output directory for the binary. Defaults to "
+        "the current directory",
+    )
+    parser.add_argument(
+        "--binary", help="Binary to build: wpr (default) or httparchive."
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose logging"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
     build(args.os, args.arch, args.out_dir, args.binary)

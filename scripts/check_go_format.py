@@ -21,10 +21,12 @@ def check_gofmt():
     `gofmt -l` exits with 0 even when files are unformatted.
     """
     try:
-        result = subprocess.run([str(go_utils.get_gofmt_path()), '-l', 'src'],
-                                capture_output=True,
-                                text=True,
-                                check=False)
+        result = subprocess.run(
+            [str(go_utils.get_gofmt_path()), "-l", "src"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         unformatted_files = result.stdout.strip().splitlines()
         if unformatted_files:
             print("The following files are not formatted. Run gofmt to fix.")
