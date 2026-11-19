@@ -113,6 +113,9 @@ type Archive struct {
 	// The constant value that Math.random() returns, if specified and
 	// deterministic.js is injected.
 	ConstantMathRandomResult *float64
+	// Whether deterministic.js overrides crypto.randomUUID() with a
+	// deterministic sequence.
+	UseDeterministicRandomUUID bool
 	// When an incoming request matches multiple recorded responses, whether to
 	// serve the responses in the chronological sequence in which wpr_go
 	// recorded them.
@@ -225,6 +228,7 @@ func (a *Archive) cloneFieldsExceptRequests() Archive {
 	clone := Archive{
 		Requests:                             make(map[string]map[string][]*ArchivedRequest),
 		DeterministicTimeSeedMs:              a.DeterministicTimeSeedMs,
+		UseDeterministicRandomUUID:           a.UseDeterministicRandomUUID,
 		ServeResponseInChronologicalSequence: a.ServeResponseInChronologicalSequence,
 		CurrentSessionId:                     a.CurrentSessionId,
 		DisableFuzzyURLMatching:              a.DisableFuzzyURLMatching,

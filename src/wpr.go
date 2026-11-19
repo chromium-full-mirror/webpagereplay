@@ -70,6 +70,7 @@ type CommonConfig struct {
 	paramToIgnoreInURLPath                   string
 	noArchiveCertificates                    bool
 	constantMathRandomResult                 float64
+	useDeterministicRandomUUID               bool
 	skipCertLoadingForTesting                bool
 	htmlInjection                            bool
 	jsInjection                              bool
@@ -201,6 +202,15 @@ func (common *CommonConfig) Flags() []cli.Flag {
 			Destination: &common.constantMathRandomResult,
 		},
 		&cli.BoolFlag{
+			Name: "deterministic-random-uuid",
+			Usage: "Make crypto.randomUUID() return a deterministic sequence of " +
+				"UUIDs (a per-document counter) in deterministic.js. When " +
+				"recording, the value is stored in the archive and reused on " +
+				"replay unless this flag is specified explicitly. Defaults to " +
+				"false.",
+			Destination: &common.useDeterministicRandomUUID,
+		},
+		&cli.BoolFlag{
 			Name:        "html-injection",
 			Value:       true,
 			Usage:       "Inject scripts into HTML responses. Defaults to true.",
@@ -289,8 +299,12 @@ func (common *CommonConfig) ProcessInjectedScriptsForRecording(c *cli.Context,
 		archive.ConstantMathRandomResult = &common.constantMathRandomResult
 	}
 
+	// Determine whether crypto.randomUUID() is made deterministic.
+	archive.UseDeterministicRandomUUID = common.useDeterministicRandomUUID
+
 	return common.processScripts(archive.InjectedScripts,
-		archive.DeterministicTimeSeedMs, archive.ConstantMathRandomResult)
+		archive.DeterministicTimeSeedMs, archive.ConstantMathRandomResult,
+		archive.UseDeterministicRandomUUID)
 }
 
 func (common *CommonConfig) ProcessInjectedScriptsForReplay(c *cli.Context,
@@ -319,6 +333,19 @@ func (common *CommonConfig) ProcessInjectedScriptsForReplay(c *cli.Context,
 		constantMathRandomResult = flagValue
 	}
 
+	useDeterministicRandomUUID := archive.UseDeterministicRandomUUID
+	if isSet(c, "deterministic-random-uuid") {
+		// Warn if archive contains a value that differs what the user specifies.
+		if common.useDeterministicRandomUUID != archive.UseDeterministicRandomUUID {
+			Log().Warn("deterministic-random-uuid flag differs from archive",
+				"flag", common.useDeterministicRandomUUID,
+				"archive", archive.UseDeterministicRandomUUID)
+		}
+
+		// Still respect the user's wishes.
+		useDeterministicRandomUUID = common.useDeterministicRandomUUID
+	}
+
 	injectArchiveScripts := c.String("inject-archive-scripts") == "true"
 
 	// If the user didn't explicitly request a script, and the archive already
@@ -337,7 +364,8 @@ func (common *CommonConfig) ProcessInjectedScriptsForReplay(c *cli.Context,
 		for name, contents := range archive.InjectedScripts {
 			scriptsMap[name] = contents
 			replacedContents := replaceConstants(
-				name, []byte(contents), timeSeedMs, constantMathRandomResult)
+				name, []byte(contents), timeSeedMs, constantMathRandomResult,
+				useDeterministicRandomUUID)
 			if err := common.addScriptInjector(replacedContents, name); err != nil {
 				return fmt.Errorf("error processing injected script %s: %v", name, err)
 			}
@@ -346,7 +374,8 @@ func (common *CommonConfig) ProcessInjectedScriptsForReplay(c *cli.Context,
 
 	// Process scripts that were added from the archive and/or from the command line using
 	// the --inject-scripts flag.
-	if err := common.processScripts(scriptsMap, timeSeedMs, constantMathRandomResult); err != nil {
+	if err := common.processScripts(scriptsMap, timeSeedMs,
+		constantMathRandomResult, useDeterministicRandomUUID); err != nil {
 		return err
 	}
 
@@ -367,7 +396,9 @@ var (
 	ErrDuplicateScriptName = errors.New("Duplicate script name")
 )
 
-func (common *CommonConfig) processScripts(scripts map[string]string, timeSeedMs int64, constantMathRandomResult *float64) error {
+func (common *CommonConfig) processScripts(scripts map[string]string,
+	timeSeedMs int64, constantMathRandomResult *float64,
+	useDeterministicRandomUUID bool) error {
 	if common.injectScripts == "" {
 		return nil
 	}
@@ -383,7 +414,8 @@ func (common *CommonConfig) processScripts(scripts map[string]string, timeSeedMs
 			}
 			scripts[name] = string(script)
 		}
-		script = replaceConstants(name, script, timeSeedMs, constantMathRandomResult)
+		script = replaceConstants(name, script, timeSeedMs,
+			constantMathRandomResult, useDeterministicRandomUUID)
 		if err := common.addScriptInjector(script, name); err != nil {
 			return fmt.Errorf("error processing injected script %s: %v", name, err)
 		}
@@ -445,12 +477,14 @@ func parseInjectScriptsByUrl(byUrl []string) ([]*webpagereplay.TransformerRule, 
 }
 
 func replaceConstants(
-	filename string, script []byte, timeSeedMs int64, constantMathRandomResult *float64) []byte {
+	filename string, script []byte, timeSeedMs int64,
+	constantMathRandomResult *float64, useDeterministicRandomUUID bool) []byte {
 
 	randomResultStr := "null"
 	if constantMathRandomResult != nil {
 		randomResultStr = strconv.FormatFloat(*constantMathRandomResult, 'f', -1, 64)
 	}
+	randomUUIDStr := strconv.FormatBool(useDeterministicRandomUUID)
 
 	timeSeedTimestamp := strconv.FormatInt(timeSeedMs, 10)
 	// Legacy format, kept for backwards compatibility. These must be applied first,
@@ -462,6 +496,7 @@ func replaceConstants(
 	// New format.
 	script = bytes.Replace(script, []byte("WPR_TIME_SEED_TIMESTAMP"), []byte(timeSeedTimestamp), -1)
 	script = bytes.Replace(script, []byte("WPR_CONSTANT_RANDOM_RESULT"), []byte(randomResultStr), -1)
+	script = bytes.Replace(script, []byte("WPR_DETERMINISTIC_RANDOM_UUID"), []byte(randomUUIDStr), -1)
 	return script
 }
 

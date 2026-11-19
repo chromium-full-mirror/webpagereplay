@@ -807,6 +807,7 @@ func TestArchiveClone(t *testing.T) {
 		},
 		DeterministicTimeSeedMs:              12345,
 		ConstantMathRandomResult:             &val,
+		UseDeterministicRandomUUID:           true,
 		ServeResponseInChronologicalSequence: true,
 		CurrentSessionId:                     10,
 		DisableFuzzyURLMatching:              true,
@@ -838,6 +839,7 @@ func TestArchiveClone(t *testing.T) {
 	expectEqual("NegotiatedProtocol")
 	expectEqual("DeterministicTimeSeedMs")
 	expectEqual("ConstantMathRandomResult")
+	expectEqual("UseDeterministicRandomUUID")
 	expectEqual("ServeResponseInChronologicalSequence")
 	expectEqual("CurrentSessionId")
 	expectEqual("DisableFuzzyURLMatching")
@@ -867,6 +869,7 @@ func TestArchiveCloneIndependence(t *testing.T) {
 		},
 		DeterministicTimeSeedMs:              12345,
 		ConstantMathRandomResult:             &val,
+		UseDeterministicRandomUUID:           true,
 		ServeResponseInChronologicalSequence: true,
 		CurrentSessionId:                     10,
 		DisableFuzzyURLMatching:              true,
@@ -901,6 +904,9 @@ func TestArchiveCloneIndependence(t *testing.T) {
 
 	*clone.ConstantMathRandomResult = 0.456
 	expectUnequal("ConstantMathRandomResult")
+
+	clone.UseDeterministicRandomUUID = false
+	expectUnequal("UseDeterministicRandomUUID")
 
 	clone.ServeResponseInChronologicalSequence = false
 	expectUnequal("ServeResponseInChronologicalSequence")
@@ -1025,6 +1031,54 @@ func TestArchiveJSON_InjectedScripts(t *testing.T) {
 	if !reflect.DeepEqual(unmarshalled.InjectedScripts, original.InjectedScripts) {
 		t.Errorf("InjectedScripts mismatch in unmarshalled: got %v, want %v",
 			unmarshalled.InjectedScripts, original.InjectedScripts)
+	}
+}
+
+func TestArchiveJSON_WithUseDeterministicRandomUUID(t *testing.T) {
+	original := Archive{
+		UseDeterministicRandomUUID: true,
+		Requests:                   make(map[string]map[string][]*ArchivedRequest),
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var unmarshalled Archive
+	if err := json.Unmarshal(data, &unmarshalled); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if !unmarshalled.UseDeterministicRandomUUID {
+		t.Error("UseDeterministicRandomUUID should be true")
+	}
+}
+
+func TestArchiveJSON_WithoutUseDeterministicRandomUUID(t *testing.T) {
+	original := Archive{
+		UseDeterministicRandomUUID: false,
+		Requests:                   make(map[string]map[string][]*ArchivedRequest),
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var unmarshalled Archive
+	if err := json.Unmarshal(data, &unmarshalled); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if unmarshalled.UseDeterministicRandomUUID {
+		t.Error("UseDeterministicRandomUUID should be false")
+	}
+}
+
+func TestArchiveJSON_LegacyArchiveWithoutUseDeterministicRandomUUID(t *testing.T) {
+	// Archives recorded before the field existed must default to false.
+	data := []byte(`{"Requests": {}}`)
+	var unmarshalled Archive
+	if err := json.Unmarshal(data, &unmarshalled); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if unmarshalled.UseDeterministicRandomUUID {
+		t.Error("UseDeterministicRandomUUID should default to false")
 	}
 }
 

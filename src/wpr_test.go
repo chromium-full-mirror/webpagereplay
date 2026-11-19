@@ -92,12 +92,13 @@ func TestCommonConfig_CheckArgs(t *testing.T) {
 func TestReplaceConstants(t *testing.T) {
 	ptr := func(f float64) *float64 { return &f }
 	tests := []struct {
-		name     string
-		filename string
-		content  string
-		timeSeed int64
-		random   *float64
-		want     string
+		name       string
+		filename   string
+		content    string
+		timeSeed   int64
+		random     *float64
+		randomUUID bool
+		want       string
 	}{
 		{
 			name:     "deterministic.js with random result",
@@ -138,12 +139,29 @@ func TestReplaceConstants(t *testing.T) {
 			want: "const timeSeed1 = 12345; const random1 = 0.5; " +
 				"const timeSeed2 = 12345; const random2 = 0.5;",
 		},
+		{
+			name:       "deterministic.js with deterministic random UUID",
+			filename:   "deterministic.js",
+			content:    "const uuid = WPR_DETERMINISTIC_RANDOM_UUID;",
+			timeSeed:   12345,
+			randomUUID: true,
+			want:       "const uuid = true;",
+		},
+		{
+			name:       "deterministic.js without deterministic random UUID",
+			filename:   "deterministic.js",
+			content:    "const uuid = WPR_DETERMINISTIC_RANDOM_UUID;",
+			timeSeed:   12345,
+			randomUUID: false,
+			want:       "const uuid = false;",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := string(replaceConstants(
-				tt.filename, []byte(tt.content), tt.timeSeed, tt.random))
+				tt.filename, []byte(tt.content), tt.timeSeed, tt.random,
+				tt.randomUUID))
 			if got != tt.want {
 				t.Errorf("replaceConstants(%s) = %s, want %s", tt.content, got, tt.want)
 			}
@@ -190,6 +208,38 @@ func TestProcessInjectedScriptsForRecording(t *testing.T) {
 
 	if len(common.transformers) != 1 {
 		t.Errorf("expected 1 transformer, got %d", len(common.transformers))
+	}
+}
+
+func TestProcessInjectedScriptsForRecording_UseDeterministicRandomUUIDEnabled(t *testing.T) {
+	common := &CommonConfig{useDeterministicRandomUUID: true}
+	archive := &webpagereplay.Archive{
+		InjectedScripts: make(map[string]string),
+	}
+	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
+	c := cli.NewContext(nil, flagSet, nil)
+
+	if err := common.ProcessInjectedScriptsForRecording(c, archive); err != nil {
+		t.Fatalf("ProcessInjectedScriptsForRecording failed: %v", err)
+	}
+	if !archive.UseDeterministicRandomUUID {
+		t.Error("UseDeterministicRandomUUID should be true")
+	}
+}
+
+func TestProcessInjectedScriptsForRecording_UseDeterministicRandomUUIDDisabled(t *testing.T) {
+	common := &CommonConfig{useDeterministicRandomUUID: false}
+	archive := &webpagereplay.Archive{
+		InjectedScripts: make(map[string]string),
+	}
+	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
+	c := cli.NewContext(nil, flagSet, nil)
+
+	if err := common.ProcessInjectedScriptsForRecording(c, archive); err != nil {
+		t.Fatalf("ProcessInjectedScriptsForRecording failed: %v", err)
+	}
+	if archive.UseDeterministicRandomUUID {
+		t.Error("UseDeterministicRandomUUID should be false")
 	}
 }
 

@@ -45,6 +45,20 @@ function __performDeterministicOverrides() {
     }
   })();
 
+  // crypto.randomUUID
+  (function() {
+    const deterministic_random_uuid = WPR_DETERMINISTIC_RANDOM_UUID;
+    if (deterministic_random_uuid && typeof (crypto) == 'object' &&
+        typeof (crypto.randomUUID) == 'function') {
+      let uuid_counter = 0;
+      crypto.randomUUID = function() {
+        uuid_counter++;
+        const suffix = uuid_counter.toString(16).padStart(12, '0');
+        return '00000000-0000-4000-8000-' + suffix;
+      };
+    }
+  })();
+
   // Date
   (function() {
     let date_count = 0;
